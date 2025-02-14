@@ -1,41 +1,57 @@
--- OoT 1.0 VRAM address for Overlay_Load
+-- FUTURE(Sirius902) Make this work on all versions of OoT by sigscanning Overlay_Load and gActorOverlayTable.
+-- Plus come up with better sig that works between versions for EnBomChu_UpdateFloorPoly to search for within
+-- ovl_En_Bom_Chu.
+
+---OoT 1.0 VRAM address for Overlay_Load
 local overlay_load_ram = 0x800CCBB8
 
--- OoT 1.0 VRAM address for gActorOverlayTable
+---OoT 1.0 VRAM address for gActorOverlayTable
 local actor_overlay_table_ram = 0x800E8530
 
--- ACTOR_EN_BOM_CHU
+---ACTOR_EN_BOM_CHU
 local actor_id_bombchu = 0x00DA
 
--- sizeof(ActorOverlay)
+---sizeof(ActorOverlay)
 local actor_overlay_size = 0x20
 
--- offsetof(ActorOverlay, loadedRamAddr)
+---offsetof(ActorOverlay, loadedRamAddr)
 local actor_overlay_loaded_ram_addr_off = 0x10
 
--- offsetof(ActorOverlay, romFile) + offsetof(RomFile, vromStart)
+---offsetof(ActorOverlay, romFile) + offsetof(RomFile, vromStart)
 local actor_overlay_vrom_start_off = 0x0
 
--- offsetof(ActorOverlay, romFile) + offsetof(RomFile, vromEnd)
+---offsetof(ActorOverlay, romFile) + offsetof(RomFile, vromEnd)
 local actor_overlay_vrom_end_off = 0x4
 
--- VRAM address of hooked Bombchu overlay.
+---VRAM address of hooked Bombchu overlay.
+---@type integer|nil
 local bombchu_hooked_loaded_ram_addr = nil
 
--- VRAM address of hooked EnBomChu_UpdateFloorPoly.
+---VRAM address of hooked EnBomChu_UpdateFloorPoly.
+---@type integer|nil
 local bombchu_update_floor_poly_ram = nil
 
--- Hook for EnBomChu_UpdateFloorPoly hook if any. nil otherwise.
+---Hook for EnBomChu_UpdateFloorPoly.
+---@type string|nil
 local bombchu_update_floor_poly_hook = nil
 
+---Get the lower dword of a register as a u32.
+---@param reg string The register name.
+---@return integer value The value of the register as a u32.
 local function getregister(reg)
   return emu.getregister(reg .. "_lo") & 0xFFFFFFFF
 end
 
+---Get the RDRAM address from a VRAM address.
+---@param vram integer
+---@return integer rdram The RDRAM address for `vram`.
 local function rdram(vram)
   return vram - 0x80000000
 end
 
+---When an overlay begins loading, check if it's the Bombchu overlay. If so, hook
+---EnBomChu_UpdateFloorPoly and early return if the floor poly is null to prevent
+---a crash when exploding Bombchus out of bounds.
 local function on_overlay_load()
   local vrom_start = getregister("a0")
   local vrom_end = getregister("a1")
@@ -45,8 +61,11 @@ local function on_overlay_load()
 
   local bombchu_overlay_entry = actor_overlay_table_ram + (actor_overlay_size * actor_id_bombchu)
 
+  ---Start of ovl_En_Bom_Chu in VROM.
   local bombchu_overlay_vrom_start =
     memory.read_u32_be(rdram(bombchu_overlay_entry + actor_overlay_vrom_start_off), "RDRAM")
+
+  ---End of ovl_En_Bom_Chu in VROM.
   local bombchu_overlay_vrom_end =
     memory.read_u32_be(rdram(bombchu_overlay_entry + actor_overlay_vrom_end_off), "RDRAM")
 
@@ -102,6 +121,18 @@ local function on_overlay_load()
         -- Detect that the game would crash from null floor poly. Return immediately.
         local floor_poly = getregister("a1")
         if floor_poly == 0 then
+          -- NOTE(Sirius902) I would LOVE to just do `emu.setregister("PC", getregister("ra"))`
+          -- but setting registers is not implemented for Mupen64. The second best thing would
+          -- be to just:
+          --
+          -- jr $ra
+          -- nop
+          --
+          -- But unfortunately it seems the funny `event.on_bus_exec` hook is running *after* the
+          -- instruction is already run so we have to undo the movement of the stack pointer before
+          -- returning. Due to that hook the second and third instructions for our jr $ra and consider
+          -- them our "first" and "second" hooked instructions.
+
           local first_inst = memory.read_u32_be(rdram(bombchu_update_floor_poly_ram + 4), "RDRAM")
           local second_inst = memory.read_u32_be(rdram(bombchu_update_floor_poly_ram + 8), "RDRAM")
 
